@@ -9,30 +9,31 @@ from contextlib import asynccontextmanager
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart
+from aiogram.types import Message
 
-from bot.config import settings
+from bot import configure_logging, get_logger, settings
 from bot.database import init_db, close_db
-from bot.logger import configure_logging, get_logger
-from bot.handlers import newhire, callbacks, commands
-from bot.scheduler.reminders import (
-    setup_scheduler, 
-    start_scheduler, 
+from bot.middlewares.auth import AuthMiddleware, LoggingMiddleware
+from bot.handlers.newhire import router as newhire_router
+from bot.handlers.callbacks import router as callbacks_router
+from bot.handlers.commands import router as commands_router
+from bot.services.scheduler import (
+    setup_scheduler,
+    start_scheduler,
     shutdown_scheduler,
 )
 
-# Configure logging
-configure_logging()
 logger = get_logger(__name__)
 
-
-# Global bot and dispatcher
+# Global bot and dispatcher instances
 bot: Bot = None
 dp: Dispatcher = None
 
 
-async def on_startup() -> None:
-    """Actions to perform on startup."""
-    logger.info("Starting Onboarding Bot...")
+async def on_startup():
+    """Actions to perform on bot startup."""
+    logger.info("Starting bot...")
     
     # Initialize database
     await init_db()
@@ -43,70 +44,85 @@ async def on_startup() -> None:
     start_scheduler()
     logger.info("Scheduler started")
     
-    # Send startup notification to chat (optional)
-    try:
-        if settings.ONBOARDING_CHAT_ID:
-            await bot.send_message(
-                chat_id=settings.ONBOARDING_CHAT_ID,
-                text="🤖 Onboarding Bot запущен и готов к работе!",
-            )
-    except Exception as e:
-        logger.warning("Could not send startup notification", error=str(e))
-    
-    logger.info("Onboarding Bot started successfully")
+    # Log configuration
+    logger.info(
+        "Bot configuration",
+        timezone=settings.TIMEZONE,
+        onboarding_chat_id=settings.ONBOARDING_CHAT_ID,
+        allowed_creators_count=len(settings.allowed_creators_list),
+        admin_count=len(settings.admin_ids_list),
+    )
 
 
-async def on_shutdown() -> None:
-    """Actions to perform on shutdown."""
-    logger.info("Shutting down Onboarding Bot...")
+async def on_shutdown():
+    """Actions to perform on bot shutdown."""
+    logger.info("Shutting down bot...")
     
-    # Stop scheduler
+    # Shutdown scheduler
     shutdown_scheduler()
     
     # Close database
     await close_db()
     
-    # Send shutdown notification
-    try:
-        if settings.ONBOARDING_CHAT_ID:
-            await bot.send_message(
-                chat_id=settings.ONBOARDING_CHAT_ID,
-                text="🤖 Onboarding Bot остановлен.",
-            )
-    except Exception as e:
-        logger.warning("Could not send shutdown notification", error=str(e))
-    
     # Close bot session
-    await bot.session.close()
+    if bot:
+        await bot.session.close()
     
-    logger.info("Onboarding Bot shutdown complete")
+    logger.info("Bot shutdown complete")
 
 
-def setup_handlers() -> None:
-    """Setup all handlers."""
-    # Create dispatcher
+def setup_dispatcher():
+    """Setup dispatcher with routers and middlewares."""
     global dp
+    
     dp = Dispatcher()
     
-    # Register routers
-    dp.include_router(commands.router)
-    dp.include_router(newhire.router)
-    dp.include_router(callbacks.router)
+    # Add middlewares
+    dp.message.middleware(AuthMiddleware())
+    dp.callback_query.middleware(AuthMiddleware())
+    dp.message.middleware(LoggingMiddleware())
+    dp.callback_query.middleware(LoggingMiddleware())
     
-    logger.info("Handlers registered")
+    # Register routers
+    dp.include_router(newhire_router)
+    dp.include_router(callbacks_router)
+    dp.include_router(commands_router)
+    
+    # Start command handler
+    @dp.message(CommandStart())
+    async def cmd_start(message: Message, is_allowed_creator: bool = False):
+        """Handle /start command."""
+        welcome_text = """
+👋 <b>Добро пожаловать в бот онбординга!</b>
+
+Этот бот помогает автоматизировать процесс выхода новых сотрудников.
+
+"""
+        if is_allowed_creator:
+            welcome_text += """
+✅ У вас есть права на создание карточек.
+
+Используйте /newhire для создания карточки нового сотрудника.
+"""
+        else:
+            welcome_text += """
+ℹ️ Вы можете просматривать статусы карточек в общем чате.
+Для создания карточек обратитесь к администратору.
+"""
+        
+        welcome_text += "\n📝 /help — справка по командам"
+        
+        await message.answer(welcome_text, parse_mode="HTML")
+    
+    return dp
 
 
-async def main() -> None:
-    """Main function."""
+async def main():
+    """Main function to run the bot."""
     global bot
     
-    # Validate configuration
-    if not settings.BOT_TOKEN:
-        logger.error("BOT_TOKEN is not set!")
-        sys.exit(1)
-    
-    if not settings.ONBOARDING_CHAT_ID:
-        logger.warning("ONBOARDING_CHAT_ID is not set! Bot may not work correctly.")
+    # Configure logging
+    configure_logging()
     
     # Create bot instance
     bot = Bot(
@@ -114,25 +130,11 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     
-    # Setup handlers
-    setup_handlers()
+    # Setup dispatcher
+    setup_dispatcher()
     
-    # Run startup
+    # Run startup actions
     await on_startup()
-    
-    # Setup signal handlers for graceful shutdown
-    loop = asyncio.get_event_loop()
-    
-    def signal_handler():
-        logger.info("Received shutdown signal")
-        asyncio.create_task(on_shutdown())
-    
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, signal_handler)
-        except NotImplementedError:
-            # Windows doesn't support add_signal_handler
-            pass
     
     try:
         # Start polling
@@ -141,17 +143,21 @@ async def main() -> None:
             bot,
             allowed_updates=dp.resolve_used_update_types(),
         )
-    except asyncio.CancelledError:
-        logger.info("Polling cancelled")
     finally:
+        # Run shutdown actions
         await on_shutdown()
 
 
-if __name__ == "__main__":
+def run():
+    """Entry point for running the bot."""
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("Bot stopped by user (KeyboardInterrupt)")
     except Exception as e:
-        logger.error("Fatal error", error=str(e), exc_info=True)
+        logger.error("Bot crashed", error=str(e), exc_info=True)
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    run()

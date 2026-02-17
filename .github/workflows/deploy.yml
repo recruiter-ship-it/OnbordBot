@@ -2,103 +2,124 @@ name: Deploy Onboarding Bot
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 jobs:
-  test:
+  lint:
+    name: Lint Code
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Syntax check
-        run: |
-          python -m py_compile main.py
-          python -m py_compile bot/config.py
-          python -m py_compile bot/database/models.py
-          python -m py_compile bot/handlers/newhire.py
+          pip install flake8 black isort
+
+      - name: Run Black
+        run: black --check --diff .
+
+      - name: Run isort
+        run: isort --check-only --diff .
+
+      - name: Run Flake8
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
   build:
-    needs: test
+    name: Build Docker Image
     runs-on: ubuntu-latest
+    needs: lint
+    if: github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
-      
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      
-      - name: Login to GitHub Container Registry
+
+      - name: Login to Docker Hub (optional)
+        if: ${{ secrets.DOCKER_USERNAME != '' }}
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Build and push
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+          push: false
+          tags: onboarding-bot:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: build
+    name: Deploy to Server
     runs-on: ubuntu-latest
+    needs: build
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Deploy to server
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to server via SSH
+        if: ${{ secrets.SERVER_HOST != '' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
           script: |
-            cd /opt/onboarding-bot
+            cd ${{ secrets.DEPLOY_PATH || '/opt/onboarding-bot' }}
             
             # Pull latest changes
             git pull origin main
             
-            # Pull latest image
-            docker-compose pull
+            # Stop existing container
+            docker-compose down || true
             
-            # Restart containers
-            docker-compose down
+            # Build and start new container
+            docker-compose build --no-cache
             docker-compose up -d
             
             # Clean up old images
             docker image prune -f
+            
+            echo "Deployment completed at $(date)"
 
   notify:
-    needs: deploy
+    name: Notify on Deployment
     runs-on: ubuntu-latest
-    if: always()
+    needs: deploy
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
-      - name: Notify on success
-        if: needs.deploy.result == 'success'
-        run: |
-          echo "✅ Deployment successful!"
-          
-      - name: Notify on failure
-        if: needs.deploy.result == 'failure'
-        run: |
-          echo "❌ Deployment failed!"
-          exit 1
+      - name: Send Telegram notification
+        uses: appleboy/telegram-action@master
+        if: ${{ secrets.TELEGRAM_TO != '' }}
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          message: |
+            🤖 Onboarding Bot Deployment
+            
+            Status: ${{ job.status }}
+            Commit: ${{ github.sha }}
+            Branch: ${{ github.ref_name }}
+            Author: ${{ github.actor }}
+            
+            ${{ job.status == 'success' && '✅ Deployed successfully!' || '❌ Deployment failed!' }}

@@ -1,19 +1,23 @@
 """
-Handler for inline button callbacks.
+Handler for inline button callbacks (status updates, etc.).
 """
 from aiogram import Router, F, Bot
-from aiogram.types import CallbackQuery, Message
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.database import get_session
-from bot.database.models import LeaderStatus, LegalStatus, DevOpsStatus
+from bot.database.models import (
+    Hire,
+    HireStatus,
+    LeaderStatus,
+    LegalStatus,
+    DevOpsStatus,
+)
 from bot.services.hire_service import HireService
 from bot.keyboards.inline import (
     get_hire_card_keyboard,
-    get_status_keyboard,
     CALLBACK_LEADER_ACK,
     CALLBACK_DOCS_SENT,
     CALLBACK_ACCESS_GRANTED,
@@ -22,8 +26,8 @@ from bot.keyboards.inline import (
     CALLBACK_SHOW_STATUS,
     CALLBACK_ADD_NOTE,
 )
-from bot.utils.formatting import format_hire_card, format_status_details
-from bot.middlewares.access import is_creator_or_admin, is_admin
+from bot.handlers.newhire import format_hire_card
+from bot.utils.date_utils import format_date, format_datetime
 from bot.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,229 +35,352 @@ logger = get_logger(__name__)
 router = Router()
 
 
-class NoteState(StatesGroup):
-    """State for adding notes."""
-    waiting_for_note = State()
+# --- Helper Functions ---
 
+def is_user_authorized_for_action(
+    callback: CallbackQuery,
+    hire: Hire,
+    action: str,
+) -> bool:
+    """Check if user is authorized to perform the action."""
+    user_id = callback.from_user.id
+    username = callback.from_user.username.lower() if callback.from_user.username else ""
+    
+    is_creator = user_id == hire.creator_id
+    is_admin = user_id in settings.admin_ids_list
+    
+    if action == "leader_ack":
+        # Only the assigned leader can acknowledge
+        return (
+            user_id == hire.leader_id or
+            username == hire.leader_username.lower() or
+            is_creator or
+            is_admin
+        )
+    
+    elif action == "docs_sent":
+        # Only the assigned legal can mark docs sent
+        return (
+            user_id == hire.legal_id or
+            username == hire.legal_username.lower() or
+            is_creator or
+            is_admin
+        )
+    
+    elif action == "access_granted":
+        # Only the assigned devops can grant access
+        return (
+            user_id == hire.devops_id or
+            username == hire.devops_username.lower() or
+            is_creator or
+            is_admin
+        )
+    
+    elif action in ["complete", "reopen", "add_note"]:
+        # Only creator or admin can complete/reopen/add notes
+        return is_creator or is_admin
+    
+    elif action == "show_status":
+        # Everyone can view status
+        return True
+    
+    return False
+
+
+async def update_card_message(
+    bot: Bot,
+    hire: Hire,
+    is_creator: bool = False,
+    is_admin: bool = False,
+):
+    """Update the hire card message in the group chat."""
+    try:
+        card_text = format_hire_card(hire)
+        keyboard = get_hire_card_keyboard(
+            hire_id=hire.hire_id,
+            leader_status=hire.leader_status,
+            legal_status=hire.legal_status,
+            devops_status=hire.devops_status,
+            overall_status=hire.status,
+            is_creator=is_creator,
+            is_admin=is_admin,
+        )
+        
+        await bot.edit_message_text(
+            chat_id=hire.chat_id,
+            message_id=hire.message_id,
+            text=card_text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    except TelegramBadRequest as e:
+        logger.warning(
+            "Failed to update card message",
+            hire_id=hire.hire_id,
+            error=str(e),
+        )
+
+
+# --- Leader Acknowledge Handler ---
 
 @router.callback_query(F.data.startswith(CALLBACK_LEADER_ACK))
 async def leader_acknowledge(callback: CallbackQuery, bot: Bot):
-    """Handle leader acknowledgment."""
+    """Handle leader acknowledge button."""
     hire_id = callback.data[len(CALLBACK_LEADER_ACK):]
-    user_id = callback.from_user.id
-    username = callback.from_user.username or ""
     
     async with get_session() as session:
         hire_service = HireService(session)
         hire = await hire_service.get_hire(hire_id)
         
         if not hire:
-            await callback.answer("❌ Карточка не найдена", show_alert=True)
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
             return
         
-        # Check if this is the assigned leader (by username or ID)
-        is_leader = (
-            user_id == hire.leader_id or
-            username.lower() == hire.leader_username.lower()
-        )
-        
-        if not is_leader and not is_admin(user_id):
+        if not is_user_authorized_for_action(callback, hire, "leader_ack"):
             await callback.answer(
-                "❌ Недостаточно прав. Только назначенный лидер может подтвердить.",
-                show_alert=True
+                "⛔ Недостаточно прав. Только назначенный лидер может подтвердить.",
+                show_alert=True,
             )
             return
         
         if hire.leader_status == LeaderStatus.ACKNOWLEDGED:
-            await callback.answer("✅ Уже подтверждено", show_alert=True)
+            await callback.answer("✅ Уже подтверждено!", show_alert=True)
             return
         
         # Update status
-        hire = await hire_service.update_leader_status(
+        await hire_service.update_leader_status(
             hire_id=hire_id,
             status=LeaderStatus.ACKNOWLEDGED,
-            actor_id=user_id,
-            actor_username=username,
+            actor_id=callback.from_user.id,
+            actor_username=callback.from_user.username,
         )
         
-        # Update message
-        await _update_card_message(bot, hire, user_id)
+        # Refresh hire data
+        hire = await hire_service.get_hire(hire_id)
         
-        await callback.answer("✅ Статус обновлён: Leader acknowledged")
-        logger.info("Leader acknowledged", hire_id=hire_id, user_id=user_id)
+        # Update card message
+        await update_card_message(
+            bot,
+            hire,
+            is_creator=callback.from_user.id == hire.creator_id,
+            is_admin=callback.from_user.id in settings.admin_ids_list,
+        )
+        
+        await callback.answer("✅ Статус обновлён: Лидер подтвердил!")
+        logger.info(
+            "Leader acknowledged",
+            hire_id=hire_id,
+            actor_id=callback.from_user.id,
+        )
 
+
+# --- Docs Sent Handler ---
 
 @router.callback_query(F.data.startswith(CALLBACK_DOCS_SENT))
 async def docs_sent(callback: CallbackQuery, bot: Bot):
-    """Handle docs sent action."""
+    """Handle docs sent button."""
     hire_id = callback.data[len(CALLBACK_DOCS_SENT):]
-    user_id = callback.from_user.id
-    username = callback.from_user.username or ""
     
     async with get_session() as session:
         hire_service = HireService(session)
         hire = await hire_service.get_hire(hire_id)
         
         if not hire:
-            await callback.answer("❌ Карточка не найдена", show_alert=True)
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
             return
         
-        # Check if this is the assigned legal (by username or ID)
-        is_legal = (
-            user_id == hire.legal_id or
-            username.lower() == hire.legal_username.lower()
-        )
-        
-        if not is_legal and not is_admin(user_id):
+        if not is_user_authorized_for_action(callback, hire, "docs_sent"):
             await callback.answer(
-                "❌ Недостаточно прав. Только назначенный юрист может отправить документы.",
-                show_alert=True
+                "⛔ Недостаточно прав. Только юрист может отметить отправку документов.",
+                show_alert=True,
             )
             return
         
         if hire.legal_status == LegalStatus.DOCS_SENT:
-            await callback.answer("✅ Документы уже отправлены", show_alert=True)
+            await callback.answer("✅ Документы уже отправлены!", show_alert=True)
             return
         
         # Update status
-        hire = await hire_service.update_legal_status(
+        await hire_service.update_legal_status(
             hire_id=hire_id,
             status=LegalStatus.DOCS_SENT,
-            actor_id=user_id,
-            actor_username=username,
+            actor_id=callback.from_user.id,
+            actor_username=callback.from_user.username,
         )
         
-        # Update message
-        await _update_card_message(bot, hire, user_id)
+        # Refresh hire data
+        hire = await hire_service.get_hire(hire_id)
         
-        await callback.answer("✅ Статус обновлён: Docs sent")
-        logger.info("Docs sent", hire_id=hire_id, user_id=user_id)
+        # Update card message
+        await update_card_message(
+            bot,
+            hire,
+            is_creator=callback.from_user.id == hire.creator_id,
+            is_admin=callback.from_user.id in settings.admin_ids_list,
+        )
+        
+        await callback.answer("✅ Статус обновлён: Документы отправлены!")
+        logger.info(
+            "Docs sent",
+            hire_id=hire_id,
+            actor_id=callback.from_user.id,
+        )
 
+
+# --- Access Granted Handler ---
 
 @router.callback_query(F.data.startswith(CALLBACK_ACCESS_GRANTED))
 async def access_granted(callback: CallbackQuery, bot: Bot):
-    """Handle access granted action."""
+    """Handle access granted button."""
     hire_id = callback.data[len(CALLBACK_ACCESS_GRANTED):]
-    user_id = callback.from_user.id
-    username = callback.from_user.username or ""
     
     async with get_session() as session:
         hire_service = HireService(session)
         hire = await hire_service.get_hire(hire_id)
         
         if not hire:
-            await callback.answer("❌ Карточка не найдена", show_alert=True)
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
             return
         
-        # Check if this is the assigned devops (by username or ID)
-        is_devops = (
-            user_id == hire.devops_id or
-            username.lower() == hire.devops_username.lower()
-        )
-        
-        if not is_devops and not is_admin(user_id):
+        if not is_user_authorized_for_action(callback, hire, "access_granted"):
             await callback.answer(
-                "❌ Недостаточно прав. Только назначенный DevOps может выдать доступы.",
-                show_alert=True
+                "⛔ Недостаточно прав. Только DevOps может выдать доступы.",
+                show_alert=True,
             )
             return
         
         if hire.devops_status == DevOpsStatus.ACCESS_GRANTED:
-            await callback.answer("✅ Доступы уже выданы", show_alert=True)
+            await callback.answer("✅ Доступы уже выданы!", show_alert=True)
             return
         
         # Update status
-        hire = await hire_service.update_devops_status(
+        await hire_service.update_devops_status(
             hire_id=hire_id,
             status=DevOpsStatus.ACCESS_GRANTED,
-            actor_id=user_id,
-            actor_username=username,
+            actor_id=callback.from_user.id,
+            actor_username=callback.from_user.username,
         )
         
-        # Update message
-        await _update_card_message(bot, hire, user_id)
+        # Refresh hire data
+        hire = await hire_service.get_hire(hire_id)
         
-        await callback.answer("✅ Статус обновлён: Access granted")
-        logger.info("Access granted", hire_id=hire_id, user_id=user_id)
+        # Update card message
+        await update_card_message(
+            bot,
+            hire,
+            is_creator=callback.from_user.id == hire.creator_id,
+            is_admin=callback.from_user.id in settings.admin_ids_list,
+        )
+        
+        await callback.answer("✅ Статус обновлён: Доступы выданы!")
+        logger.info(
+            "Access granted",
+            hire_id=hire_id,
+            actor_id=callback.from_user.id,
+        )
 
+
+# --- Complete Handler ---
 
 @router.callback_query(F.data.startswith(CALLBACK_COMPLETE))
 async def mark_complete(callback: CallbackQuery, bot: Bot):
-    """Mark hire as completed."""
+    """Handle mark complete button."""
     hire_id = callback.data[len(CALLBACK_COMPLETE):]
-    user_id = callback.from_user.id
-    username = callback.from_user.username or ""
     
     async with get_session() as session:
         hire_service = HireService(session)
         hire = await hire_service.get_hire(hire_id)
         
         if not hire:
-            await callback.answer("❌ Карточка не найдена", show_alert=True)
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
             return
         
-        # Only creator or admin can mark as completed
-        if not is_creator_or_admin(user_id):
+        if not is_user_authorized_for_action(callback, hire, "complete"):
             await callback.answer(
-                "❌ Недостаточно прав. Только рекрутер или админ может завершить.",
-                show_alert=True
+                "⛔ Недостаточно прав. Только создатель или админ может завершить.",
+                show_alert=True,
             )
             return
         
         # Update status
-        hire = await hire_service.mark_completed(
+        await hire_service.mark_completed(
             hire_id=hire_id,
-            actor_id=user_id,
-            actor_username=username,
+            actor_id=callback.from_user.id,
+            actor_username=callback.from_user.username,
         )
         
-        # Update message
-        await _update_card_message(bot, hire, user_id)
+        # Refresh hire data
+        hire = await hire_service.get_hire(hire_id)
+        
+        # Update card message
+        await update_card_message(
+            bot,
+            hire,
+            is_creator=True,
+            is_admin=callback.from_user.id in settings.admin_ids_list,
+        )
         
         await callback.answer("✅ Карточка завершена!")
-        logger.info("Hire completed", hire_id=hire_id, user_id=user_id)
+        logger.info(
+            "Hire completed",
+            hire_id=hire_id,
+            actor_id=callback.from_user.id,
+        )
 
+
+# --- Reopen Handler ---
 
 @router.callback_query(F.data.startswith(CALLBACK_REOPEN))
 async def reopen_hire(callback: CallbackQuery, bot: Bot):
-    """Reopen a completed hire."""
+    """Handle reopen button."""
     hire_id = callback.data[len(CALLBACK_REOPEN):]
-    user_id = callback.from_user.id
-    username = callback.from_user.username or ""
     
     async with get_session() as session:
         hire_service = HireService(session)
         hire = await hire_service.get_hire(hire_id)
         
         if not hire:
-            await callback.answer("❌ Карточка не найдена", show_alert=True)
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
             return
         
-        # Only creator or admin can reopen
-        if not is_creator_or_admin(user_id):
+        if not is_user_authorized_for_action(callback, hire, "reopen"):
             await callback.answer(
-                "❌ Недостаточно прав. Только рекрутер или админ может переоткрыть.",
-                show_alert=True
+                "⛔ Недостаточно прав. Только создатель или админ может переоткрыть.",
+                show_alert=True,
             )
             return
         
         # Update status
-        hire = await hire_service.reopen(
+        await hire_service.reopen(
             hire_id=hire_id,
-            actor_id=user_id,
-            actor_username=username,
+            actor_id=callback.from_user.id,
+            actor_username=callback.from_user.username,
         )
         
-        # Update message
-        await _update_card_message(bot, hire, user_id)
+        # Refresh hire data
+        hire = await hire_service.get_hire(hire_id)
         
-        await callback.answer("🔄 Карточка переоткрыта")
-        logger.info("Hire reopened", hire_id=hire_id, user_id=user_id)
+        # Update card message
+        await update_card_message(
+            bot,
+            hire,
+            is_creator=True,
+            is_admin=callback.from_user.id in settings.admin_ids_list,
+        )
+        
+        await callback.answer("🔄 Карточка переоткрыта!")
+        logger.info(
+            "Hire reopened",
+            hire_id=hire_id,
+            actor_id=callback.from_user.id,
+        )
 
+
+# --- Show Status Handler ---
 
 @router.callback_query(F.data.startswith(CALLBACK_SHOW_STATUS))
 async def show_status(callback: CallbackQuery, bot: Bot):
-    """Show detailed status."""
+    """Handle show status button."""
     hire_id = callback.data[len(CALLBACK_SHOW_STATUS):]
     
     async with get_session() as session:
@@ -261,123 +388,86 @@ async def show_status(callback: CallbackQuery, bot: Bot):
         hire = await hire_service.get_hire(hire_id)
         
         if not hire:
-            await callback.answer("❌ Карточка не найдена", show_alert=True)
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
             return
         
-        status_text = format_status_details(hire)
+        # Get history
+        history = await hire_service.get_history(hire_id)
         
-        await callback.message.edit_text(
-            status_text,
-            parse_mode="HTML",
-            reply_markup=get_status_keyboard(hire_id),
-        )
+        # Format status message
+        status_text = f"""
+📊 <b>Статус карточки #{hire.hire_id}</b>
+
+👤 <b>Сотрудник:</b> {hire.full_name}
+📅 <b>Дата выхода:</b> {format_date(hire.start_date)}
+
+━━━━━━━━━━━━━━━━━━━━
+
+<b>Текущие статусы:</b>
+👤 Лидер: {hire.leader_status.value}
+⚖️ Юрист: {hire.legal_status.value}
+🔧 DevOps: {hire.devops_status.value}
+
+📊 <b>Общий статус:</b> {hire.status.value}
+
+━━━━━━━━━━━━━━━━━━━━
+
+<b>История изменений:</b>
+"""
         
-        await callback.answer()
+        for h in history[-10:]:  # Last 10 entries
+            actor = f"@{h.actor_username}" if h.actor_username else f"ID:{h.actor_id}"
+            status_text += f"\n• {format_datetime(h.ts)} - {h.action} ({actor})"
+        
+        # Send as new message or edit
+        try:
+            await callback.message.answer(
+                status_text,
+                parse_mode="HTML",
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.warning(
+                "Failed to send status",
+                hire_id=hire_id,
+                error=str(e),
+            )
+            await callback.answer("❌ Ошибка при отображении статуса", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("back_to_card:"))
-async def back_to_card(callback: CallbackQuery, bot: Bot):
-    """Go back to card view from status."""
-    hire_id = callback.data[len("back_to_card:"):]
-    user_id = callback.from_user.id
+# --- Add Note Handler (shows prompt) ---
+
+@router.callback_query(F.data.startswith(CALLBACK_ADD_NOTE))
+async def add_note_prompt(callback: CallbackQuery):
+    """Prompt user to add a note."""
+    hire_id = callback.data[len(CALLBACK_ADD_NOTE):]
     
     async with get_session() as session:
         hire_service = HireService(session)
         hire = await hire_service.get_hire(hire_id)
         
         if not hire:
-            await callback.answer("❌ Карточка не найдена", show_alert=True)
+            await callback.answer("❌ Карточка не найдена!", show_alert=True)
             return
         
-        await _update_card_message(bot, hire, user_id, message=callback.message)
-        await callback.answer()
-
-
-@router.callback_query(F.data.startswith(CALLBACK_ADD_NOTE))
-async def add_note_start(callback: CallbackQuery, state: FSMContext):
-    """Start note addition process."""
-    hire_id = callback.data[len(CALLBACK_ADD_NOTE):]
-    user_id = callback.from_user.id
-    
-    if not is_creator_or_admin(user_id):
-        await callback.answer(
-            "❌ Недостаточно прав.",
-            show_alert=True
-        )
-        return
-    
-    await state.update_data(hire_id=hire_id, message_id=callback.message.message_id)
-    
-    await callback.message.answer(
-        "📝 Введите текст заметки:",
-    )
-    
-    await state.set_state(NoteState.waiting_for_note)
-    await callback.answer()
-
-
-@router.message(NoteState.waiting_for_note)
-async def add_note_process(message: Message, state: FSMContext, bot: Bot):
-    """Process note addition."""
-    data = await state.get_data()
-    hire_id = data.get("hire_id")
-    user_id = message.from_user.id
-    username = message.from_user.username or ""
-    
-    note = message.text.strip()
-    
-    async with get_session() as session:
-        hire_service = HireService(session)
-        hire = await hire_service.add_note(
-            hire_id=hire_id,
-            note=note,
-            actor_id=user_id,
-            actor_username=username,
-        )
-        
-        if hire:
-            await _update_card_message(bot, hire, user_id)
-            await message.answer("✅ Заметка добавлена")
-    
-    await state.clear()
-
-
-async def _update_card_message(
-    bot: Bot, 
-    hire, 
-    user_id: int,
-    message: Message = None
-) -> None:
-    """Update the hire card message in the chat."""
-    card = format_hire_card(hire)
-    
-    is_creator = user_id == hire.creator_id
-    is_adm = is_admin(user_id)
-    
-    keyboard = get_hire_card_keyboard(
-        hire_id=hire.hire_id,
-        leader_status=hire.leader_status,
-        legal_status=hire.legal_status,
-        devops_status=hire.devops_status,
-        overall_status=hire.status,
-        is_creator=is_creator,
-        is_admin=is_adm,
-    )
-    
-    try:
-        if message:
-            await message.edit_text(
-                card,
-                parse_mode="HTML",
-                reply_markup=keyboard,
+        if not is_user_authorized_for_action(callback, hire, "add_note"):
+            await callback.answer(
+                "⛔ Недостаточно прав. Только создатель или админ может добавлять заметки.",
+                show_alert=True,
             )
-        elif hire.message_id:
-            await bot.edit_message_text(
-                chat_id=hire.chat_id,
-                message_id=hire.message_id,
-                text=card,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-    except Exception as e:
-        logger.warning("Failed to update message", error=str(e))
+            return
+    
+    # For now, show alert asking to send note via command
+    # In a full implementation, this would open a new FSM state
+    await callback.answer(
+        f"📝 Чтобы добавить заметку, отправьте команду:\n/note {hire_id} <текст заметки>",
+        show_alert=True,
+    )
+
+
+# --- No-op handler for disabled buttons ---
+
+@router.callback_query(F.data == "noop")
+async def noop(callback: CallbackQuery):
+    """Handle no-op callbacks for disabled buttons."""
+    await callback.answer("Это действие уже выполнено.", show_alert=False)
