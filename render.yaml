@@ -8,7 +8,7 @@ services:
       - key: BOT_TOKEN
         sync: false
       - key: ONBOARDING_CHAT_ID
-        value: "-5102890643"
+        value: "-1003536251280"
       - key: ALLOWED_CREATORS
         value: "7294861370"
       - key: ADMIN_IDS
