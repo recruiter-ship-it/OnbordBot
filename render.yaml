@@ -4,19 +4,16 @@ services:
     env: docker
     dockerfilePath: ./Dockerfile
     plan: free
-    healthCheckPath: /
     envVars:
       - key: BOT_TOKEN
         sync: false
       - key: ONBOARDING_CHAT_ID
-        sync: false
+        value: "-5102890643"
       - key: ALLOWED_CREATORS
-        sync: false
+        value: "7294861370"
       - key: ADMIN_IDS
-        sync: false
-      - key: DEFAULT_LEGAL_USERNAME
-        sync: false
-      - key: DEFAULT_DEVOPS_USERNAME
-        sync: false
+        value: "7294861370"
+      - key: DB_URL
+        value: "sqlite+aiosqlite:///./data/onboarding.db"
       - key: TIMEZONE
-        value: Europe/London
+        value: "Europe/London"

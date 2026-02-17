@@ -16,12 +16,6 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/onboarding.db')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
 
 volumes:
   bot-data:

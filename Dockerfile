@@ -22,17 +22,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create non-root user
+# Create non-root user and data directory
 RUN useradd --create-home --shell /bin/bash appuser && \
+    mkdir -p /app/data && \
     chown -R appuser:appuser /app
 USER appuser
-
-# Create directory for database
-RUN mkdir -p /app/data
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sqlite3; sqlite3.connect('/app/data/onboarding.db')" || exit 1
 
 # Run the bot
 CMD ["python", "main.py"]
