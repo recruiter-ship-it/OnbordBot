@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  onboarding-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: onboarding-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist database
+      - ./data:/app/data
+      # For development
+      - ./.env:/app/.env:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: PostgreSQL for production
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: onboarding-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: onboarding
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD}
+  #     POSTGRES_DB: onboarding
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U onboarding"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+# volumes:
+#   postgres_data:
