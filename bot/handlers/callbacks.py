@@ -394,35 +394,45 @@ async def show_status(callback: CallbackQuery, bot: Bot):
         # Get history
         history = await hire_service.get_history(hire_id)
         
+        # Status icons
+        leader_icon = "✅" if hire.leader_status == LeaderStatus.ACKNOWLEDGED else "⏳"
+        legal_icon = "✅" if hire.legal_status == LegalStatus.DOCS_SENT else "⏳"
+        devops_icon = "✅" if hire.devops_status == DevOpsStatus.ACCESS_GRANTED else "⏳"
+        
+        status_text = {
+            HireStatus.CREATED: "🆕 Создана",
+            HireStatus.IN_PROGRESS: "🔄 В процессе",
+            HireStatus.READY_FOR_DAY1: "✅ Готов к выходу",
+            HireStatus.COMPLETED: "🏁 Завершено",
+        }.get(hire.status, hire.status.value)
+        
         # Format status message
-        status_text = f"""
-📊 <b>Статус карточки #{hire.hire_id}</b>
+        status_text_msg = f"""
+📊 <b>Подробности #{hire.hire_id}</b>
 
-👤 <b>Сотрудник:</b> {hire.full_name}
-📅 <b>Дата выхода:</b> {format_date(hire.start_date)}
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 👤 {hire.full_name}
+┃ 📅 {format_date(hire.start_date)} • 💼 {hire.role}
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-━━━━━━━━━━━━━━━━━━━━
+<b>👥 Статусы:</b>
+┃ {leader_icon} Лидер: {hire.leader_status.value}
+┃ {legal_icon} Юрист: {hire.legal_status.value}
+┃ {devops_icon} DevOps: {hire.devops_status.value}
 
-<b>Текущие статусы:</b>
-👤 Лидер: {hire.leader_status.value}
-⚖️ Юрист: {hire.legal_status.value}
-🔧 DevOps: {hire.devops_status.value}
+<b>📊 Общий статус:</b> {status_text}
 
-📊 <b>Общий статус:</b> {hire.status.value}
-
-━━━━━━━━━━━━━━━━━━━━
-
-<b>История изменений:</b>
+<b>📝 История:</b>
 """
         
-        for h in history[-10:]:  # Last 10 entries
+        for h in history[-5:]:  # Last 5 entries
             actor = f"@{h.actor_username}" if h.actor_username else f"ID:{h.actor_id}"
-            status_text += f"\n• {format_datetime(h.ts)} - {h.action} ({actor})"
+            status_text_msg += f"• {format_datetime(h.ts)} — {h.action}\n"
         
-        # Send as new message or edit
+        # Send as new message
         try:
             await callback.message.answer(
-                status_text,
+                status_text_msg,
                 parse_mode="HTML",
             )
             await callback.answer()

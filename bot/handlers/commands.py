@@ -84,7 +84,7 @@ async def cmd_status(message: Message, command: CommandObject):
     if not hire_id:
         await message.answer(
             "❌ Укажите ID карточки.\n"
-            "Пример: /status ABC123"
+            "Пример: /status A3F2"
         )
         return
     
@@ -115,42 +115,40 @@ async def cmd_status(message: Message, command: CommandObject):
         legal_icon = "✅" if hire.legal_status == LegalStatus.DOCS_SENT else "⏳"
         devops_icon = "✅" if hire.devops_status == DevOpsStatus.ACCESS_GRANTED else "⏳"
         
+        # Count completed
+        completed = sum([
+            hire.leader_status == LeaderStatus.ACKNOWLEDGED,
+            hire.legal_status == LegalStatus.DOCS_SENT,
+            hire.devops_status == DevOpsStatus.ACCESS_GRANTED,
+        ])
+        
         status_text = f"""
-📊 <b>Статус карточки #{hire.hire_id}</b>
+📊 <b>Карточка #{hire.hire_id}</b>
 
-━━━━━━━━━━━━━━━━━━━━
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 👤 {hire.full_name}
+┃ 📅 {format_date(hire.start_date)} • 💼 {hire.role}
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-👤 <b>ФИО:</b> {hire.full_name}
-📅 <b>Дата выхода:</b> {format_date(hire.start_date)}
-💼 <b>Роль:</b> {hire.role}
 {days_text}
 
-━━━━━━━━━━━━━━━━━━━━
+<b>👥 Статусы ({completed}/3):</b>
+┃ {leader_icon} Лидер: @{hire.leader_username}
+┃ {legal_icon} Юрист: @{hire.legal_username}
+┃ {devops_icon} DevOps: @{hire.devops_username}
 
-<b>Статусы ответственных:</b>
-
-👤 Лидер (@{hire.leader_username}): {leader_icon} {hire.leader_status.value}
-⚖️ Юрист (@{hire.legal_username}): {legal_icon} {hire.legal_status.value}
-🔧 DevOps (@{hire.devops_username}): {devops_icon} {hire.devops_status.value}
-
-━━━━━━━━━━━━━━━━━━━━
-
-<b>Общий статус:</b> {hire.status.value}
-
-📧 <b>Почта:</b> {hire.docs_email}
+<b>📧 Почта:</b> {hire.docs_email}
 """
         
         if hire.notes:
             notes_preview = hire.notes[:200] + "..." if len(hire.notes) > 200 else hire.notes
-            status_text += f"\n📝 <b>Заметки:</b>\n{notes_preview}\n"
+            status_text += f"\n<b>📝 Заметки:</b>\n{notes_preview}\n"
         
         # Add recent history
-        status_text += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        status_text += "<b>Последние изменения:</b>\n"
+        status_text += "\n<b>📝 История:</b>\n"
         
         for h in history[-5:]:
-            actor = f"@{h.actor_username}" if h.actor_username else f"ID:{h.actor_id}"
-            status_text += f"• {format_datetime(h.ts)} — {h.action} ({actor})\n"
+            status_text += f"• {format_datetime(h.ts)} — {h.action}\n"
         
         await message.answer(status_text, parse_mode="HTML")
 
@@ -167,13 +165,13 @@ async def cmd_list(message: Message, command: CommandObject):
         
         if filter_type == "open":
             hires = await hire_service.get_open_hires()
-            title = "📋 <b>Открытые карточки</b>\n"
+            title = "📋 <b>Открытые карточки</b>"
         elif filter_type == "all":
             hires = await hire_service.get_hires_by_status(exclude_completed=False)
-            title = "📋 <b>Все карточки</b>\n"
+            title = "📋 <b>Все карточки</b>"
         elif filter_type == "completed":
             hires = await hire_service.get_hires_by_status(statuses=[HireStatus.COMPLETED])
-            title = "🏁 <b>Завершённые карточки</b>\n"
+            title = "🏁 <b>Завершённые карточки</b>"
         else:
             await message.answer(
                 "❌ Неверный фильтр. Используйте:\n"
@@ -184,43 +182,40 @@ async def cmd_list(message: Message, command: CommandObject):
             return
         
         if not hires:
-            await message.answer(f"{title}\nНет карточек.")
+            await message.answer(f"{title}\n\nНет карточек.")
             return
         
         # Format list
-        text = title + "\n━━━━━━━━━━━━━━━━━━━━\n"
+        text = f"{title}\n\n"
         
-        for hire in hires[:20]:  # Limit to 20
+        for i, hire in enumerate(hires[:15], 1):  # Limit to 15
             days = days_until(hire.start_date)
             
             if days > 0:
-                days_text = f"({days} дн.)"
+                days_text = f"⏳ {days} дн."
             elif days == 0:
-                days_text = "(сегодня!)"
+                days_text = "📅 сегодня!"
             else:
-                days_text = f"(просрочено {abs(days)} дн.)"
+                days_text = f"⚠️ -{abs(days)} дн."
             
             # Status indicators
             indicators = []
             if hire.leader_status == LeaderStatus.ACKNOWLEDGED:
-                indicators.append("👤✅")
+                indicators.append("✅")
             if hire.legal_status == LegalStatus.DOCS_SENT:
-                indicators.append("⚖️✅")
+                indicators.append("✅")
             if hire.devops_status == DevOpsStatus.ACCESS_GRANTED:
-                indicators.append("🔧✅")
+                indicators.append("✅")
             
-            indicator_text = " ".join(indicators) if indicators else "⏳"
+            progress = "".join(indicators) if indicators else "⏳⏳⏳"
             
-            text += f"""
-🎯 <b>#{hire.hire_id}</b> {days_text}
-👤 {hire.full_name}
-💼 {hire.role}
-📅 {format_date(hire.start_date)}
-{indicator_text}
-"""
+            text += f"""<b>{i}. #{hire.hire_id}</b> {days_text}
+   👤 {hire.full_name} • 💼 {hire.role}
+   📅 {format_date(hire.start_date)} • {progress}
+\n"""
         
-        if len(hires) > 20:
-            text += f"\n... и ещё {len(hires) - 20} карточек"
+        if len(hires) > 15:
+            text += f"\n... и ещё {len(hires) - 15} карточек"
         
         await message.answer(text, parse_mode="HTML")
 

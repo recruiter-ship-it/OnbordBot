@@ -74,48 +74,46 @@ def get_hire_card_keyboard(
     """Get inline keyboard for hire card."""
     builder = InlineKeyboardBuilder()
     
-    # Leader button
+    # Status buttons with visual indicators
     if leader_status == LeaderStatus.PENDING:
         builder.button(
-            text="✅ Leader acknowledged",
+            text="👤 Лидер подтвердил",
             callback_data=f"{CALLBACK_LEADER_ACK}{hire_id}"
         )
     else:
         builder.button(
-            text=f"✅ Leader: {leader_status.value}",
+            text=f"👤 Лидер: ✅ Подтверждено",
             callback_data="noop"
         )
     
-    # Legal button
     if legal_status == LegalStatus.PENDING:
         builder.button(
-            text="📄 Docs sent",
+            text="📄 Документы отправлены",
             callback_data=f"{CALLBACK_DOCS_SENT}{hire_id}"
         )
     else:
         builder.button(
-            text=f"📄 Docs: {legal_status.value}",
+            text=f"📄 Документы: ✅ Отправлены",
             callback_data="noop"
         )
     
-    # DevOps button
     if devops_status == DevOpsStatus.PENDING:
         builder.button(
-            text="🔑 Access granted",
+            text="🔐 Доступы выданы",
             callback_data=f"{CALLBACK_ACCESS_GRANTED}{hire_id}"
         )
     else:
         builder.button(
-            text=f"🔑 Access: {devops_status.value}",
+            text=f"🔐 Доступы: ✅ Выданы",
             callback_data="noop"
         )
     
     builder.adjust(1)
     
-    # Status and actions row
+    # Info button
     builder.row(
         InlineKeyboardButton(
-            text="ℹ️ Статус",
+            text="📊 Подробнее",
             callback_data=f"{CALLBACK_SHOW_STATUS}{hire_id}"
         )
     )
@@ -125,14 +123,14 @@ def get_hire_card_keyboard(
         if overall_status == HireStatus.COMPLETED:
             builder.row(
                 InlineKeyboardButton(
-                    text="🔄 Переоткрыть",
+                    text="🔄 Открыть снова",
                     callback_data=f"{CALLBACK_REOPEN}{hire_id}"
                 )
             )
         else:
             builder.row(
                 InlineKeyboardButton(
-                    text="✅ Завершить",
+                    text="🏁 Завершить",
                     callback_data=f"{CALLBACK_COMPLETE}{hire_id}"
                 ),
                 InlineKeyboardButton(
@@ -156,7 +154,7 @@ def get_cancel_keyboard() -> InlineKeyboardMarkup:
 def get_confirm_keyboard() -> InlineKeyboardMarkup:
     """Get confirmation keyboard."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Подтвердить", callback_data=f"{CALLBACK_CONFIRM}yes")
+    builder.button(text="✅ Создать карточку", callback_data=f"{CALLBACK_CONFIRM}yes")
     builder.button(text="❌ Отмена", callback_data=CALLBACK_CANCEL)
     builder.adjust(2)
     return builder.as_markup()
@@ -167,7 +165,7 @@ def get_status_keyboard(hire_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
-                text="◀️ Назад", 
+                text="◀️ Назад к карточке", 
                 callback_data=f"back_to_card:{hire_id}"
             )]
         ]

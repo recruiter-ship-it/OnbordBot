@@ -50,21 +50,42 @@ async def get_user_id_by_username(bot: Bot, username: str, chat_id: int) -> Opti
 
 def format_hire_preview(data: dict) -> str:
     """Format hire data preview for confirmation."""
-    checklist_text = "\n".join([f"  • {k}" for k, v in data.get("access_checklist", {}).items() if v])
+    checklist_labels = {
+        "email": "📧 Email",
+        "github": "💻 GitHub",
+        "jira": "📋 Jira",
+        "vpn": "🔒 VPN",
+        "slack": "💬 Slack/Telegram",
+        "cloud": "☁️ Облако",
+        "prod": "🚀 Prod/Stage",
+        "other": "📝 Другое",
+    }
+    
+    checklist_items = [checklist_labels.get(k, k) for k, v in data.get("access_checklist", {}).items() if v]
+    checklist_text = "\n".join([f"    • {item}" for item in checklist_items]) if checklist_items else "    Не указано"
     
     return f"""
-📋 <b>Проверьте данные нового сотрудника:</b>
+📋 <b>Проверьте данные нового сотрудника</b>
 
-👤 <b>ФИО:</b> {data.get('full_name', 'Не указано')}
-📅 <b>Дата выхода:</b> {format_date(data.get('start_date'))}
-💼 <b>Роль:</b> {data.get('role', 'Не указано')}
-👤 <b>Лидер:</b> @{data.get('leader_username', 'Не указано')}
-⚖️ <b>Юрист:</b> @{data.get('legal_username', 'Не указано')}
-🔧 <b>DevOps:</b> @{data.get('devops_username', 'Не указано')}
-📧 <b>Почта для документов:</b> {data.get('docs_email', 'Не указано')}
-📋 <b>Чеклист доступов:</b>
-{checklist_text if checklist_text else '  Не указано'}
-📝 <b>Примечания:</b> {data.get('notes', 'Нет')}
+┌──────────────────────┐
+│ 👤 <b>ФИО:</b> {data.get('full_name', 'Не указано')}
+│ 📅 <b>Дата выхода:</b> {format_date(data.get('start_date'))}
+│ 💼 <b>Роль:</b> {data.get('role', 'Не указано')}
+└──────────────────────┘
+
+<b>👥 Ответственные:</b>
+    🧑‍💼 Лидер: @{data.get('leader_username', 'Не указано')}
+    ⚖️ Юрист: @{data.get('legal_username', 'Не указано')}
+    🔧 DevOps: @{data.get('devops_username', 'Не указано')}
+
+<b>📧 Почта для документов:</b>
+    {data.get('docs_email', 'Не указано')}
+
+<b>🔐 Необходимые доступы:</b>
+{checklist_text}
+
+<b>📝 Примечания:</b>
+    {data.get('notes', 'Нет')}
 """
 
 
@@ -515,12 +536,19 @@ def format_hire_card(hire: Hire) -> str:
         label = checklist_labels.get(key, key)
         checklist_items.append(label)
     
-    checklist_text = "\n    ".join(checklist_items) if checklist_items else "Не указан"
+    checklist_text = " ".join(checklist_items) if checklist_items else "Не указаны"
     
     # Format status indicators
-    leader_status_icon = "✅" if hire.leader_status == LeaderStatus.ACKNOWLEDGED else "⏳"
-    legal_status_icon = "✅" if hire.legal_status == LegalStatus.DOCS_SENT else "⏳"
-    devops_status_icon = "✅" if hire.devops_status == DevOpsStatus.ACCESS_GRANTED else "⏳"
+    leader_icon = "✅" if hire.leader_status == LeaderStatus.ACKNOWLEDGED else "⏳"
+    legal_icon = "✅" if hire.legal_status == LegalStatus.DOCS_SENT else "⏳"
+    devops_icon = "✅" if hire.devops_status == DevOpsStatus.ACCESS_GRANTED else "⏳"
+    
+    # Count completed statuses
+    completed = sum([
+        hire.leader_status == LeaderStatus.ACKNOWLEDGED,
+        hire.legal_status == LegalStatus.DOCS_SENT,
+        hire.devops_status == DevOpsStatus.ACCESS_GRANTED,
+    ])
     
     status_text = {
         HireStatus.CREATED: "🆕 Создана",
@@ -530,31 +558,24 @@ def format_hire_card(hire: Hire) -> str:
     }.get(hire.status, hire.status.value)
     
     return f"""
-🎯 <b>New hire #{hire.hire_id}</b>
+🎯 <b>Карточка новичка #{hire.hire_id}</b>
 
-━━━━━━━━━━━━━━━━━━━━
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 👤 <b>{hire.full_name}</b>
+┃ 📅 {format_date(hire.start_date)} • 💼 {hire.role}
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-👤 <b>ФИО:</b> {hire.full_name}
-📅 <b>Дата выхода:</b> {format_date(hire.start_date)}
-💼 <b>Роль:</b> {hire.role}
+<b>👥 Статусы ответственных ({completed}/3):</b>
+┃ {leader_icon} Лидер: @{hire.leader_username}
+┃ {legal_icon} Юрист: @{hire.legal_username}
+┃ {devops_icon} DevOps: @{hire.devops_username}
 
-━━━━━━━━━━━━━━━━━━━━
+<b>📧 Почта:</b> {hire.docs_email}
+<b>🔐 Доступы:</b> {checklist_text}
 
-<b>Назначенные:</b>
-👤 Лидер: @{hire.leader_username} {leader_status_icon}
-⚖️ Юрист: @{hire.legal_username} {legal_status_icon}
-🔧 DevOps: @{hire.devops_username} {devops_status_icon}
-
-━━━━━━━━━━━━━━━━━━━━
-
-📧 <b>Почта:</b> {hire.docs_email}
-
-📋 <b>Доступы:</b>
-    {checklist_text}
-
-━━━━━━━━━━━━━━━━━━━━
-
-📊 <b>Статус:</b> {status_text}
+┌────────────────────────────┐
+│ 📊 {status_text}
+└────────────────────────────┘
 """
 
 
@@ -566,14 +587,14 @@ async def notify_assigned_users(bot: Bot, hire: Hire, creator_id: int):
             await bot.send_message(
                 chat_id=hire.leader_id,
                 text=f"""
-👋 Вы назначены лидером для нового сотрудника!
+👋 <b>Вы назначены лидером для нового сотрудника!</b>
 
-🎯 <b>New hire #{hire.hire_id}</b>
-👤 <b>ФИО:</b> {hire.full_name}
-📅 <b>Дата выхода:</b> {format_date(hire.start_date)}
-💼 <b>Роль:</b> {hire.role}
+🎯 Карточка #{hire.hire_id}
+👤 {hire.full_name}
+📅 Дата выхода: {format_date(hire.start_date)}
+💼 Роль: {hire.role}
 
-Пожалуйста, подтвердите готовность в чате онбординга.
+Нажмите кнопку «👤 Лидер подтвердил» в чате онбординга.
 """,
                 parse_mode="HTML",
             )
@@ -591,14 +612,14 @@ async def notify_assigned_users(bot: Bot, hire: Hire, creator_id: int):
             await bot.send_message(
                 chat_id=hire.legal_id,
                 text=f"""
-👋 Вам нужно подготовить документы для нового сотрудника!
+⚖️ <b>Требуется подготовить документы!</b>
 
-🎯 <b>New hire #{hire.hire_id}</b>
-👤 <b>ФИО:</b> {hire.full_name}
-📅 <b>Дата выхода:</b> {format_date(hire.start_date)}
-📧 <b>Почта:</b> {hire.docs_email}
+🎯 Карточка #{hire.hire_id}
+👤 {hire.full_name}
+📅 Дата выхода: {format_date(hire.start_date)}
+📧 Почта: {hire.docs_email}
 
-Пожалуйста, отправьте документы и отметьте статус в чате онбординга.
+После отправки документов нажмите «📄 Документы отправлены» в чате.
 """,
                 parse_mode="HTML",
             )
@@ -616,14 +637,14 @@ async def notify_assigned_users(bot: Bot, hire: Hire, creator_id: int):
             await bot.send_message(
                 chat_id=hire.devops_id,
                 text=f"""
-👋 Вам нужно настроить доступы для нового сотрудника!
+🔧 <b>Требуется настроить доступы!</b>
 
-🎯 <b>New hire #{hire.hire_id}</b>
-👤 <b>ФИО:</b> {hire.full_name}
-📅 <b>Дата выхода:</b> {format_date(hire.start_date)}
-💼 <b>Роль:</b> {hire.role}
+🎯 Карточка #{hire.hire_id}
+👤 {hire.full_name}
+📅 Дата выхода: {format_date(hire.start_date)}
+💼 Роль: {hire.role}
 
-Пожалуйста, настройте доступы и отметьте статус в чате онбординга.
+После настройки нажмите «🔐 Доступы выданы» в чате онбординга.
 """,
                 parse_mode="HTML",
             )
