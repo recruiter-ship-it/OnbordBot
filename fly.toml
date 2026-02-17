@@ -1,0 +1,20 @@
+# fly.toml app configuration file generated for onboarding-bot
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = "onboarding-bot"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TIMEZONE = "Europe/London"
+
+[deploy]
+  strategy = "immediate"
+
+[[vm]]
+  cpu = 1
+  memory_mb = 256

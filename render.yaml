@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: onboarding-bot
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ONBOARDING_CHAT_ID
+        sync: false
+      - key: ALLOWED_CREATORS
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: DEFAULT_LEGAL_USERNAME
+        sync: false
+      - key: DEFAULT_DEVOPS_USERNAME
+        sync: false
+      - key: TIMEZONE
+        value: Europe/London
