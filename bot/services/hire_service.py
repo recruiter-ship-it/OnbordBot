@@ -1,11 +1,13 @@
 """
 Service layer for Hire operations.
+Compatible with Prisma schema (String statuses).
 """
 import random
 import string
-from datetime import datetime, date
+import json
+from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, not_
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import (
     Hire,
@@ -24,6 +26,15 @@ logger = get_logger(__name__)
 def generate_hire_id() -> str:
     """Generate a unique 4-character hire ID."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+
+
+def generate_cuid() -> str:
+    """Generate a Prisma-compatible ID."""
+    import time
+    import hashlib
+    ts = int(time.time() * 1000)
+    random_part = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=17))
+    return f"cl{random_part}"
 
 
 class HireService:
@@ -50,14 +61,18 @@ class HireService:
         devops_id: Optional[int] = None,
     ) -> Hire:
         """Create a new hire record."""
-        # Generate unique hire_id
+        # Generate unique IDs
+        hire_id = generate_hire_id()
         while True:
-            hire_id = generate_hire_id()
             existing = await self.get_hire(hire_id)
             if not existing:
                 break
+            hire_id = generate_hire_id()
+        
+        id = generate_cuid()
         
         hire = Hire(
+            id=id,
             hire_id=hire_id,
             full_name=full_name,
             start_date=start_date,
@@ -69,21 +84,21 @@ class HireService:
             devops_username=devops_username,
             devops_id=devops_id,
             docs_email=docs_email,
-            access_checklist=access_checklist,
+            access_checklist=json.dumps(access_checklist),  # Store as JSON string
             notes=notes,
             chat_id=chat_id,
             creator_id=creator_id,
-            status=HireStatus.CREATED,
-            leader_status=LeaderStatus.PENDING,
-            legal_status=LegalStatus.PENDING,
-            devops_status=DevOpsStatus.PENDING,
+            status="CREATED",
+            leader_status="PENDING",
+            legal_status="PENDING",
+            devops_status="PENDING",
         )
         
         self.session.add(hire)
         
         # Add history entry
         history = StatusHistory(
-            hire_id=hire_id,
+            hire_id=id,
             actor_id=creator_id,
             action="CREATED",
             details=f"Created hire record for {full_name}",
@@ -103,22 +118,29 @@ class HireService:
         return hire
     
     async def get_hire(self, hire_id: str) -> Optional[Hire]:
-        """Get a hire by ID."""
+        """Get a hire by hire_id (short ID)."""
         result = await self.session.execute(
             select(Hire).where(Hire.hire_id == hire_id)
         )
         return result.scalar_one_or_none()
     
+    async def get_hire_by_id(self, id: str) -> Optional[Hire]:
+        """Get a hire by primary key id."""
+        result = await self.session.execute(
+            select(Hire).where(Hire.id == id)
+        )
+        return result.scalar_one_or_none()
+    
     async def get_hires_by_status(
         self, 
-        statuses: Optional[List[HireStatus]] = None,
+        statuses: Optional[List[str]] = None,
         exclude_completed: bool = True,
     ) -> List[Hire]:
         """Get hires filtered by status."""
         query = select(Hire)
         
         if exclude_completed:
-            query = query.where(HireStatus != HireStatus.COMPLETED)
+            query = query.where(Hire.status != "COMPLETED")
         
         if statuses:
             query = query.where(Hire.status.in_(statuses))
@@ -134,21 +156,19 @@ class HireService:
     
     async def get_hires_needing_reminders(self) -> List[Hire]:
         """Get hires that need reminders."""
-        now = datetime.now()
-        
         result = await self.session.execute(
             select(Hire).where(
                 and_(
-                    Hire.status != HireStatus.COMPLETED,
+                    Hire.status != "COMPLETED",
                     or_(
                         # Legal reminder needed
                         and_(
-                            Hire.legal_status == LegalStatus.PENDING,
+                            Hire.legal_status == "PENDING",
                             Hire.legal_reminded == False,
                         ),
                         # DevOps reminder needed
                         and_(
-                            Hire.devops_status == DevOpsStatus.PENDING,
+                            Hire.devops_status == "PENDING",
                             Hire.devops_reminded == False,
                         ),
                         # Escalation needed
@@ -162,7 +182,7 @@ class HireService:
     async def update_leader_status(
         self, 
         hire_id: str, 
-        status: LeaderStatus,
+        status: str,
         actor_id: int,
         actor_username: Optional[str] = None,
     ) -> Optional[Hire]:
@@ -176,11 +196,11 @@ class HireService:
         
         # Add history entry
         history = StatusHistory(
-            hire_id=hire_id,
+            hire_id=hire.id,
             actor_id=actor_id,
             actor_username=actor_username,
             action="LEADER_STATUS_CHANGED",
-            details=f"Leader status: {old_status.value} -> {status.value}",
+            details=f"Leader status: {old_status} -> {status}",
         )
         self.session.add(history)
         
@@ -193,8 +213,8 @@ class HireService:
         logger.info(
             "Leader status updated",
             hire_id=hire_id,
-            old_status=old_status.value,
-            new_status=status.value,
+            old_status=old_status,
+            new_status=status,
             actor_id=actor_id,
         )
         
@@ -203,7 +223,7 @@ class HireService:
     async def update_legal_status(
         self, 
         hire_id: str, 
-        status: LegalStatus,
+        status: str,
         actor_id: int,
         actor_username: Optional[str] = None,
     ) -> Optional[Hire]:
@@ -217,11 +237,11 @@ class HireService:
         
         # Add history entry
         history = StatusHistory(
-            hire_id=hire_id,
+            hire_id=hire.id,
             actor_id=actor_id,
             actor_username=actor_username,
             action="LEGAL_STATUS_CHANGED",
-            details=f"Legal status: {old_status.value} -> {status.value}",
+            details=f"Legal status: {old_status} -> {status}",
         )
         self.session.add(history)
         
@@ -234,8 +254,8 @@ class HireService:
         logger.info(
             "Legal status updated",
             hire_id=hire_id,
-            old_status=old_status.value,
-            new_status=status.value,
+            old_status=old_status,
+            new_status=status,
             actor_id=actor_id,
         )
         
@@ -244,7 +264,7 @@ class HireService:
     async def update_devops_status(
         self, 
         hire_id: str, 
-        status: DevOpsStatus,
+        status: str,
         actor_id: int,
         actor_username: Optional[str] = None,
     ) -> Optional[Hire]:
@@ -258,11 +278,11 @@ class HireService:
         
         # Add history entry
         history = StatusHistory(
-            hire_id=hire_id,
+            hire_id=hire.id,
             actor_id=actor_id,
             actor_username=actor_username,
             action="DEVOPS_STATUS_CHANGED",
-            details=f"DevOps status: {old_status.value} -> {status.value}",
+            details=f"DevOps status: {old_status} -> {status}",
         )
         self.session.add(history)
         
@@ -275,8 +295,8 @@ class HireService:
         logger.info(
             "DevOps status updated",
             hire_id=hire_id,
-            old_status=old_status.value,
-            new_status=status.value,
+            old_status=old_status,
+            new_status=status,
             actor_id=actor_id,
         )
         
@@ -308,11 +328,11 @@ class HireService:
             return None
         
         old_status = hire.status
-        hire.status = HireStatus.COMPLETED
+        hire.status = "COMPLETED"
         
         # Add history entry
         history = StatusHistory(
-            hire_id=hire_id,
+            hire_id=hire.id,
             actor_id=actor_id,
             actor_username=actor_username,
             action="COMPLETED",
@@ -343,15 +363,15 @@ class HireService:
             return None
         
         old_status = hire.status
-        hire.status = HireStatus.IN_PROGRESS
+        hire.status = "IN_PROGRESS"
         
         # Add history entry
         history = StatusHistory(
-            hire_id=hire_id,
+            hire_id=hire.id,
             actor_id=actor_id,
             actor_username=actor_username,
             action="REOPENED",
-            details=f"Reopened from {old_status.value}",
+            details=f"Reopened from {old_status}",
         )
         self.session.add(history)
         
@@ -385,7 +405,7 @@ class HireService:
         
         # Add history entry
         history = StatusHistory(
-            hire_id=hire_id,
+            hire_id=hire.id,
             actor_id=actor_id,
             actor_username=actor_username,
             action="NOTE_ADDED",
@@ -427,25 +447,29 @@ class HireService:
     
     async def _update_overall_status(self, hire: Hire) -> None:
         """Update overall status based on individual statuses."""
-        if hire.status == HireStatus.COMPLETED:
+        if hire.status == "COMPLETED":
             return
         
         # Check if ready for day 1
-        if (hire.leader_status == LeaderStatus.ACKNOWLEDGED and
-            hire.legal_status == LegalStatus.DOCS_SENT and
-            hire.devops_status == DevOpsStatus.ACCESS_GRANTED):
-            hire.status = HireStatus.READY_FOR_DAY1
+        if (hire.leader_status == "ACKNOWLEDGED" and
+            hire.legal_status == "DOCS_SENT" and
+            hire.devops_status == "ACCESS_GRANTED"):
+            hire.status = "READY_FOR_DAY1"
         # Check if in progress
-        elif (hire.leader_status != LeaderStatus.PENDING or
-              hire.legal_status != LegalStatus.PENDING or
-              hire.devops_status != DevOpsStatus.PENDING):
-            hire.status = HireStatus.IN_PROGRESS
+        elif (hire.leader_status != "PENDING" or
+              hire.legal_status != "PENDING" or
+              hire.devops_status != "PENDING"):
+            hire.status = "IN_PROGRESS"
     
     async def get_history(self, hire_id: str) -> List[StatusHistory]:
         """Get status history for a hire."""
+        hire = await self.get_hire(hire_id)
+        if not hire:
+            return []
+        
         result = await self.session.execute(
             select(StatusHistory)
-            .where(StatusHistory.hire_id == hire_id)
+            .where(StatusHistory.hire_id == hire.id)
             .order_by(StatusHistory.ts.asc())
         )
         return list(result.scalars().all())

@@ -1,12 +1,13 @@
 """
 Database models for Onboarding Bot.
 Uses SQLAlchemy with async support.
+Compatible with Prisma schema (String instead of Enum for SQLite).
 """
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional, List
 from sqlalchemy import (
-    String, Integer, DateTime, Text, Boolean, JSON, ForeignKey, Enum as SQLEnum
+    String, Integer, DateTime, Text, Boolean, JSON, ForeignKey
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -47,7 +48,9 @@ class Hire(Base):
     """Model representing a new hire."""
     __tablename__ = "hires"
     
-    hire_id: Mapped[str] = mapped_column(String(10), primary_key=True)
+    # Primary key using Prisma-style id
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    hire_id: Mapped[str] = mapped_column(String(10), unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     start_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     role: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -63,30 +66,14 @@ class Hire(Base):
     devops_username: Mapped[str] = mapped_column(String(100), nullable=False)
     
     docs_email: Mapped[str] = mapped_column(String(255), nullable=False)
-    access_checklist: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    access_checklist: Mapped[str] = mapped_column(Text, nullable=False, default="{}")  # JSON string
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
-    # Statuses
-    status: Mapped[HireStatus] = mapped_column(
-        SQLEnum(HireStatus), 
-        nullable=False, 
-        default=HireStatus.CREATED
-    )
-    leader_status: Mapped[LeaderStatus] = mapped_column(
-        SQLEnum(LeaderStatus), 
-        nullable=False, 
-        default=LeaderStatus.PENDING
-    )
-    legal_status: Mapped[LegalStatus] = mapped_column(
-        SQLEnum(LegalStatus), 
-        nullable=False, 
-        default=LegalStatus.PENDING
-    )
-    devops_status: Mapped[DevOpsStatus] = mapped_column(
-        SQLEnum(DevOpsStatus), 
-        nullable=False, 
-        default=DevOpsStatus.PENDING
-    )
+    # Statuses (String for SQLite compatibility with Prisma)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="CREATED")
+    leader_status: Mapped[str] = mapped_column(String(50), nullable=False, default="PENDING")
+    legal_status: Mapped[str] = mapped_column(String(50), nullable=False, default="PENDING")
+    devops_status: Mapped[str] = mapped_column(String(50), nullable=False, default="PENDING")
     
     # Telegram message info
     chat_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -129,7 +116,7 @@ class StatusHistory(Base):
     __tablename__ = "status_history"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    hire_id: Mapped[str] = mapped_column(String(10), ForeignKey("hires.hire_id"), nullable=False)
+    hire_id: Mapped[str] = mapped_column(String(100), ForeignKey("hires.id"), nullable=False)
     actor_id: Mapped[int] = mapped_column(Integer, nullable=False)
     actor_username: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     action: Mapped[str] = mapped_column(String(100), nullable=False)
